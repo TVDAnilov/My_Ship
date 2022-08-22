@@ -1,32 +1,33 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * <h2><center>&copy; Copyright (c) 2022 STMicroelectronics.
-  * All rights reserved.</center></h2>
-  *
-  * This software component is licensed by ST under BSD 3-Clause license,
-  * the "License"; You may not use this file except in compliance with the
-  * License. You may obtain a copy of the License at:
-  *                        opensource.org/licenses/BSD-3-Clause
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ *
+ * <h2><center>&copy; Copyright (c) 2022 STMicroelectronics.
+ * All rights reserved.</center></h2>
+ *
+ * This software component is licensed by ST under BSD 3-Clause license,
+ * the "License"; You may not use this file except in compliance with the
+ * License. You may obtain a copy of the License at:
+ *                        opensource.org/licenses/BSD-3-Clause
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
+#include "tim.h"
+#include "usart.h"
+#include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "stdio.h"
 #include "string.h"
-
-
-
 
 #define min_PWM 2596
 #define max_PWM 4096 - 1
@@ -38,6 +39,20 @@
 
 #define oneProcent  15
 #define oneStep  0.75
+
+#define adress_master_device 0x20
+#define adress_pult 0x20
+#define adress_ship 0x60
+
+#define adress_hc_12 0xAA
+#define adress_LED 0xB4
+#define adress_engine 0xBE
+#define adress_Servo 0xC8
+
+#define adress_slave_index 0
+#define adress_master_index 1
+#define crc_adress_devices 2
+#define end_array_index 50
 
 /* USER CODE END Includes */
 
@@ -56,10 +71,6 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim3;
-
-UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 
@@ -67,10 +78,6 @@ UART_HandleTypeDef huart1;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_TIM2_Init(void);
-static void MX_USART1_UART_Init(void);
-static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -78,54 +85,208 @@ static void MX_TIM3_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+struct {
+	volatile uint8_t timerEvent;
+	volatile uint8_t dataReady;
+	volatile uint8_t rxReady;
+	volatile uint8_t txReady;
+	volatile uint8_t rxSize;
+	volatile uint8_t contact;
+	volatile uint8_t counterError;
+	volatile uint8_t Led;
+	volatile uint8_t txSize;
+	volatile uint8_t IsCommand;
+
+} flagEvent;
+
+uint8_t StickPos[4] = { };
+uint8_t transmitBuff[end_array_index] = { };
+uint8_t reciveBuff[end_array_index] = { };
+uint8_t adress_slave_device = 0;
+
+void cleanTxArr() {
+	for (uint8_t i = 0; i < end_array_index; i++) {
+		transmitBuff[i] = 0xFF; // код стоп байта
+	}
+	transmitBuff[adress_slave_index] = adress_ship;
+	transmitBuff[adress_master_index] = adress_master_device;
+
+	transmitBuff[crc_adress_devices] = crc(transmitBuff, 2);    //crc
+																		// добавить проверку на правильность адреса и устройства.
+
+}
+
+uint8_t pushArrTX(uint8_t addres_module, uint8_t *pData, uint8_t size,
+		uint8_t typeOperation) {
+	uint8_t i = 0;
+	while (transmitBuff[i] != 0xFF) { // найти конец полезных данных, не выходя за пределы массива.
+		if (i < (end_array_index - (size + 5))) { //5 = адрес модуля, тип операции, crc, байт конца команды, стоп.
+			i++;
+		} else {
+			return 1;
+		}
+	}
+	transmitBuff[i] = addres_module;
+	i++;
+	transmitBuff[i] = typeOperation;
+	i++;
+
+	for (uint8_t index = i; index < (i + size); index++) {
+		transmitBuff[index] = pData[index - i];
+	}
+
+	transmitBuff[i + size] = crc(transmitBuff + (i - 2), size + 2); // crc адреса и команды   2 = смещение назад для адреса модуля и типа команды.
+	transmitBuff[i + size + 1] = 0xFC;  // конец команды
+	transmitBuff[i + size + 2] = 0xFF;  // стоп байт
+
+	return i + size;
+
+}
 
 
-static uint8_t StickPos[4] = {};
-static uint8_t lastStickPos = 0;
 
 
 
+uint8_t changeSpeed(uint8_t speed, uint8_t direct) {
 
-
-uint8_t changeSpeed(uint8_t speed, uint8_t direct, uint8_t lastStickPos){
-
-	if (direct == 0 ){      //на месте
+	if (direct == 0) {      //на месте
 		TIM2->CCR1 = 0;
 		TIM2->CCR2 = 0;
 	}
-	if (direct == 1){		//вперед
+	if (direct == 1) {		//вперед
 		TIM2->CCR1 = 0;
-		TIM2->CCR2 = min_PWM + (oneProcent * speed/2);   // так должно быть в идеале
+		TIM2->CCR2 = min_PWM + (oneProcent * speed); // так должно быть в идеале
 
 	}
-	if (direct == 2){           //назад
+	if (direct == 2) {           //назад
 		TIM2->CCR1 = min_PWM + (oneProcent * speed);
 		TIM2->CCR2 = 0;
 	}
 	return direct;
 }
 
-uint8_t changeAngle(uint8_t angle_pwm, uint8_t direct){
-	if (direct == 0){
+uint8_t changeAngle(uint8_t angle_pwm, uint8_t direct) {
+	if (direct == 0) {
 		TIM3->CCR1 = middle_PWM_angle;   //90 градусов
 
 	}
-	if (direct == 1){				//направо
-		TIM3->CCR1 = (oneStep * angle_pwm) +  middle_PWM_angle;   //  180 градусов
+	if (direct == 1) {				//направо
+		TIM3->CCR1 = middle_PWM_angle - (oneStep * angle_pwm); //    0 градусов.
 
 	}
-	if (direct == 2){				//налево
-		TIM3->CCR1 = middle_PWM_angle - (oneStep * angle_pwm);  //    0 градусов.
+	if (direct == 2) {				//налево
+		TIM3->CCR1 = (oneStep * angle_pwm) + middle_PWM_angle;  //  180 градусов
 
 	}
 	return direct;
 }
 
-void read_air(void){
-HAL_UART_Receive(&huart1, StickPos, 4, HAL_MAX_DELAY);
+void read_air(void) {
+	HAL_UART_Receive(&huart1, StickPos, 4, HAL_MAX_DELAY);
 
-changeSpeed(StickPos[0], StickPos[1], lastStickPos);
-changeAngle(StickPos[2], StickPos[3]);
+	changeSpeed(StickPos[0], StickPos[1], lastStickPos);
+	changeAngle(StickPos[2], StickPos[3]);
+}
+
+uint8_t crc(uint8_t *pData, uint8_t size) {
+	uint16_t crc = 0;
+	for (uint8_t i = 0; i < size; i++) {
+		crc = crc + (pData[i] * 44111);
+	}
+	return (uint8_t) crc;
+
+}
+
+void direct_Led_HELLO(){
+	for(uint8_i = 0; i < 6; i++){
+		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_4);
+		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+		HAL_Delay(300);
+	}
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, RESET);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, RESET);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, RESET);
+}
+
+void direct_Led(uint8_t Red, uint8_t Green, uint8_t Blue){
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, Red);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, Green);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, Blue);
+}
+
+
+void connect_ok(void){
+	direct_Led_HELLO();
+}
+
+void parseArrRX(uint8_t *pData, uint8_t size) {
+
+	if (reciveBuff[flagEvent.rxSize - 2] == crc(reciveBuff, flagEvent.rxSize - 2)) {   //хеш сумма совпала
+		if (flagEvent.contact == 0) { //если это приветствие
+			if(reciveBuff[3] == adress_hc_12){
+				if(reciveBuff[5] == 0xc8){
+					flagEvent.contact = 1;
+					connect_ok();
+				}
+			}
+		}
+
+
+		if (flagEvent.contact == 1) {											//если уже поздоровались
+			flagEvent.IsCommand = 1;
+		}
+	}
+
+	if (reciveBuff[flagEvent.rxSize - 2] != crc(reciveBuff, flagEvent.rxSize - 3)) {
+
+	}   //хеш сумма не совпала
+
+}
+
+
+void initShip(void) {
+	flagEvent.timerEvent = 0;
+	flagEvent.dataReady = 0;
+	flagEvent.rxReady = 0;
+	flagEvent.txReady = 0;
+	flagEvent.rxSize = 0;
+	flagEvent.contact = 0;
+	flagEvent.counterError = 0;
+	flagEvent.Led = 0;
+	flagEvent.txSize = 0;
+	flagEvent.IsCommand = 0;
+
+
+	cleanTxArr();
+
+	HAL_UARTEx_ReceiveToIdle_DMA(&huart1, reciveBuff, sizeof(reciveBuff));
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+}
+
+
+void command_work(){
+	while(reciveBuff[i] != 0xFF){
+		if(i > end_array_index) break;
+
+		switch (reciveBuff[i]){
+		case adress_hc_12:
+
+			break;
+		case adress_LED:
+			direct_Led(reciveBuff[i + 1] , reciveBuff[i + 2], reciveBuff[i + 2]);
+			break;
+		case adress_engine:
+			changeSpeed(reciveBuff[i+ 1] , reciveBuff[i + 2]);
+			changeAngle(reciveBuff[i + 3], reciveBuff[i + 4]);
+			i = i + 4;
+			break;
+		case adress_Servo:	break;
+		}
+		default: i++;
+	}
 }
 
 
@@ -147,7 +308,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-  HAL_Delay(750);
+	HAL_Delay(750);
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -161,25 +322,39 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
+  MX_DMA_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+
+  initShip();
 
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+	while (1) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  read_air();
+	if (flagEvent.contact == 0){
+		uint8_t ok = 0xc8;
+		uint8_t sizeBuff = pushArrTX(adress_hc_12, &ok, 1, 1);
+		HAL_UART_Transmit_DMA(&huart1, transmitBuff, sizeBuff);
+		cleanTxArr();
+		HAL_Delay(500);
+	}
+	if (flagEvent.rxReady == 1){
+		flagEvent.rxReady = 0;
+		parseArrRX(reciveBuff, flagEvent.rxSize);
+		HAL_UARTEx_ReceiveToIdle_DMA(&huart1, reciveBuff,
+							sizeof(reciveBuff));
+	}
 
-  }
+	if (flagEvent.IsCommand == 1){
+		command_work();
+	}
+
   /* USER CODE END 3 */
 }
 
@@ -218,186 +393,14 @@ void SystemClock_Config(void)
   }
 }
 
-/**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM2_Init(void)
-{
-
-  /* USER CODE BEGIN TIM2_Init 0 */
-
-  /* USER CODE END TIM2_Init 0 */
-
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-
-  /* USER CODE BEGIN TIM2_Init 1 */
-
-  /* USER CODE END TIM2_Init 1 */
-  htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
-  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4096;
-  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_OC_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_TIMING;
-  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM2_Init 2 */
-
-  /* USER CODE END TIM2_Init 2 */
-  HAL_TIM_MspPostInit(&htim2);
-
-}
-
-/**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM3_Init(void)
-{
-
-  /* USER CODE BEGIN TIM3_Init 0 */
-
-  /* USER CODE END TIM3_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-
-  /* USER CODE BEGIN TIM3_Init 1 */
-
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 80;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 2000;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM3_Init 2 */
-
-  /* USER CODE END TIM3_Init 2 */
-  HAL_TIM_MspPostInit(&htim3);
-
-}
-
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
-
-  /*Configure GPIO pin : PB0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-}
-
 /* USER CODE BEGIN 4 */
+
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+	//HAL_UART_Transmit(&huart1, reciveBuff, Size, 100);
+	flagEvent.rxReady = 1;
+	flagEvent.rxSize = Size;
+}
 
 /* USER CODE END 4 */
 
@@ -408,11 +411,10 @@ static void MX_GPIO_Init(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
+	/* User can add his own implementation to report the HAL error return state */
+	__disable_irq();
+	while (1) {
+	}
   /* USER CODE END Error_Handler_Debug */
 }
 

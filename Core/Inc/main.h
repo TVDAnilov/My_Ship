@@ -42,7 +42,20 @@ extern "C" {
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
-
+uint8_t crc(uint8_t *pData, uint8_t size);
+void cleanTxArr();
+uint8_t pushArrTX(uint8_t addres_module, uint8_t *pData, uint8_t size,
+		uint8_t typeOperation);
+uint8_t changeSpeed(uint8_t speed, uint8_t direct);
+uint8_t changeAngle(uint8_t angle_pwm, uint8_t direct);
+void read_air(void);
+uint8_t crc(uint8_t *pData, uint8_t size);
+void direct_Led_HELLO();
+void direct_Led(uint8_t Red, uint8_t Green, uint8_t Blue);
+void connect_ok(void);
+void parseArrRX(uint8_t *pData, uint8_t size);
+void initShip(void);
+void command_work();
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/

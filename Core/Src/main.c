@@ -34,11 +34,11 @@
 
 #define min_PWM_angle 100
 #define max_PWM_angle 250
-#define middle_PWM_angle 175
+#define middle_PWM_angle 168//175
 #define min_PWM_angle 100
 
 #define oneProcent  15
-#define oneStep  0.75
+#define oneStep  0.25//0.75
 
 #define adress_master_device 0x20
 #define adress_pult 0x20
@@ -163,6 +163,7 @@ uint8_t changeSpeed(uint8_t speed, uint8_t direct) {
 			TIM2->CCR2 = min_PWM + (oneProcent * speed); // так должно быть в идеале
 
 		if (speed >= 90) {
+			speed = 80;						//ограничение:( срабатывает защита.
 			if (TIM2->CCR2 <= min_PWM) {
 				TIM2->CCR2 = min_PWM;
 			}
@@ -186,7 +187,7 @@ if (direct == 0) {
 
 }
 if (direct == 1) {				//направо
-	TIM3->CCR1 = middle_PWM_angle - (oneStep * angle_pwm); //    0 градусов.
+	TIM3->CCR1 = middle_PWM_angle - (oneStep * angle_pwm * 0.9); //    0 градусов.
 
 }
 if (direct == 2) {				//налево

@@ -95,7 +95,7 @@ struct {
 	volatile uint8_t counterError;
 	volatile uint8_t Led;
 	volatile uint8_t txSize;
-	volatile uint8_t IsCommand;
+	volatile uint8_t isCommand;
 
 } flagEvent;
 
@@ -112,8 +112,14 @@ void cleanTxArr() {
 	transmitBuff[adress_master_index] = adress_master_device;
 
 	transmitBuff[crc_adress_devices] = crc(transmitBuff, 2);    //crc
-																// добавить проверку на правильность адреса и устройства.
+																// добавить проверку на правильность адреса и устройства
+}
 
+void cleanRxArr() {
+	for (uint8_t i = 0; i < end_array_index; i++) {
+		reciveBuff[i] = 0xFF; // код стоп байта
+	}
+	flagEvent.rxSize = 0;
 }
 
 uint8_t pushArrTX(uint8_t addres_module, uint8_t *pData, uint8_t size,
@@ -153,143 +159,156 @@ uint8_t changeSpeed(uint8_t speed, uint8_t direct) {
 	}
 	if (direct == 1) {		//вперед
 		TIM2->CCR1 = 0;
-		TIM2->CCR2 = min_PWM + (oneProcent * speed); // так должно быть в идеале
+		if (speed < 70)
+			TIM2->CCR2 = min_PWM + (oneProcent * speed); // так должно быть в идеале
 
+		if (speed >= 90) {
+			if (TIM2->CCR2 <= min_PWM) {
+				TIM2->CCR2 = min_PWM;
+			}
+			for (uint16_t i = TIM2->CCR2; i < (min_PWM + (oneProcent * speed));
+					i = i + 10) {
+				TIM2->CCR2 = i;
+				HAL_Delay(2);
+			}
+		}
 	}
 	if (direct == 2) {           //назад
 		TIM2->CCR1 = min_PWM + (oneProcent * speed);
 		TIM2->CCR2 = 0;
 	}
-	return direct;
+return direct;
 }
 
 uint8_t changeAngle(uint8_t angle_pwm, uint8_t direct) {
-	if (direct == 0) {
-		TIM3->CCR1 = middle_PWM_angle;   //90 градусов
+if (direct == 0) {
+	TIM3->CCR1 = middle_PWM_angle;   //90 градусов
 
-	}
-	if (direct == 1) {				//направо
-		TIM3->CCR1 = middle_PWM_angle - (oneStep * angle_pwm); //    0 градусов.
+}
+if (direct == 1) {				//направо
+	TIM3->CCR1 = middle_PWM_angle - (oneStep * angle_pwm); //    0 градусов.
 
-	}
-	if (direct == 2) {				//налево
-		TIM3->CCR1 = (oneStep * angle_pwm) + middle_PWM_angle;  //  180 градусов
+}
+if (direct == 2) {				//налево
+	TIM3->CCR1 = (oneStep * angle_pwm) + middle_PWM_angle; //  180 градусов
 
-	}
-	return direct;
+}
+return direct;
 }
 
 void read_air(void) {
-	HAL_UART_Receive(&huart1, StickPos, 4, HAL_MAX_DELAY);
+HAL_UART_Receive(&huart1, StickPos, 4, HAL_MAX_DELAY);
 
-	changeSpeed(StickPos[0], StickPos[1]);
-	changeAngle(StickPos[2], StickPos[3]);
+changeSpeed(StickPos[0], StickPos[1]);
+changeAngle(StickPos[2], StickPos[3]);
 }
 
 uint8_t crc(uint8_t *pData, uint8_t size) {
-	uint16_t crc = 0;
-	for (uint8_t i = 0; i <size; i++) {
-		crc = crc + (pData[i] * 44111);
-	}
-	return (uint8_t) crc;
+uint16_t crc = 0;
+for (uint8_t i = 0; i < size; i++) {
+	crc = crc + (pData[i] * 44111);
+}
+return (uint8_t) crc;
 
 }
 
 void direct_Led_HELLO() {
-	for (uint8_t i = 0; i < 6; i++) {
-		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
-		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_4);
-		HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
-		HAL_Delay(300);
-	}
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, RESET);
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, RESET);
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, RESET);
+for (uint8_t i = 0; i < 6; i++) {
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_4);
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+	HAL_Delay(300);
+}
+HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, RESET);
+HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, RESET);
+HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, RESET);
 }
 
 void direct_Led(uint8_t Red, uint8_t Green, uint8_t Blue) {
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, Red);
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, Green);
-	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, Blue);
+HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, Red);
+HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, Green);
+HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, Blue);
 }
 
 void connect_ok(void) {
-	direct_Led_HELLO();
+direct_Led_HELLO();
 }
 
 void parseArrRX(uint8_t *pData, uint8_t size) {
 
-	if (reciveBuff[flagEvent.rxSize - 2]
-			== crc(reciveBuff, flagEvent.rxSize - 2)) {   //хеш сумма совпала
-		if (flagEvent.contact == 0) { //если это приветствие
-			if (reciveBuff[3] == adress_hc_12) {
-				if (reciveBuff[5] == 0xc8) {
-					flagEvent.contact = 1;
-					connect_ok();
-				}
-			}
-		}
+if (reciveBuff[flagEvent.rxSize - 2] == crc(reciveBuff, flagEvent.rxSize - 2)) { //хеш сумма совпала
 
-		if (flagEvent.contact == 1) {					//если уже поздоровались
-			flagEvent.IsCommand = 1;
+	if (flagEvent.contact == 1) {		//если уже поздоровались
+		command_work();
+	}
+
+	if (flagEvent.contact == 0) { //если это приветствие
+		if (reciveBuff[3] == adress_hc_12) {
+			if (reciveBuff[5] == 0xc8) {
+				flagEvent.contact = 1;
+				connect_ok();
+			}
 		}
 	}
 
-	if (reciveBuff[flagEvent.rxSize - 2]
-			!= crc(reciveBuff, flagEvent.rxSize - 2)) {
+}
 
-	}   //хеш сумма не совпала
+if (reciveBuff[flagEvent.rxSize - 2] != crc(reciveBuff, flagEvent.rxSize - 2)) {
+
+}   //хеш сумма не совпала
 
 }
 
 void initShip(void) {
-	flagEvent.timerEvent = 0;
-	flagEvent.dataReady = 0;
-	flagEvent.rxReady = 0;
-	flagEvent.txReady = 0;
-	flagEvent.rxSize = 0;
-	flagEvent.contact = 0;
-	flagEvent.counterError = 0;
-	flagEvent.Led = 0;
-	flagEvent.txSize = 0;
-	flagEvent.IsCommand = 0;
+flagEvent.timerEvent = 0;
+flagEvent.dataReady = 0;
+flagEvent.rxReady = 0;
+flagEvent.txReady = 0;
+flagEvent.rxSize = 0;
+flagEvent.contact = 0;
+flagEvent.counterError = 0;
+flagEvent.Led = 0;
+flagEvent.txSize = 0;
+flagEvent.isCommand = 0;
 
-	cleanTxArr();
+cleanTxArr();
+cleanRxArr();
 
-	HAL_UARTEx_ReceiveToIdle_DMA(&huart1, reciveBuff, sizeof(reciveBuff));
-	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
-	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+//HAL_UARTEx_ReceiveToIdle_DMA(&huart1, reciveBuff, sizeof(reciveBuff));
+
+HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
 }
 
-void command_work() {
-	uint8_t i = 0;
-	while (reciveBuff[i] != 0xFF) {
-		if (i > end_array_index)
-			break;
+void command_work(void) {
+uint8_t i = 0;
+while (reciveBuff[i] != 0xFF) {
+	if (i > end_array_index)
+		break;
 
-		switch (reciveBuff[i]) {
-		case adress_hc_12:
-			i++;
-			break;
-		case adress_LED:
-			direct_Led(reciveBuff[i + 1], reciveBuff[i + 2], reciveBuff[i + 2]);
-			i = i + 6;
-			break;
-		case adress_engine:
-			changeSpeed(reciveBuff[i + 2], reciveBuff[i + 3]);
-			i = i + 5;
-			break;
-		case adress_Servo:
-			changeAngle(reciveBuff[i + 2], reciveBuff[i + 3]);
-			i = i + 5;
-			break;
-		default:
-			i++;
-			break;
-		}
-
+	switch (reciveBuff[i]) {
+	case adress_hc_12:
+		i++;
+		break;
+	case adress_LED:
+		direct_Led(reciveBuff[i + 2], reciveBuff[i + 3], reciveBuff[i + 4]);
+		i = i + 7;
+		break;
+	case adress_engine:
+		changeSpeed(reciveBuff[i + 2], reciveBuff[i + 3]);
+		i = i + 5;
+		break;
+	case adress_Servo:
+		changeAngle(reciveBuff[i + 2], reciveBuff[i + 3]);
+		i = i + 5;
+		break;
+	default:
+		i++;
+		break;
 	}
+
+}
 }
 
 /* USER CODE END 0 */
@@ -299,64 +318,75 @@ void command_work() {
  * @retval int
  */
 int main(void) {
-	/* USER CODE BEGIN 1 */
+/* USER CODE BEGIN 1 */
 
-	/* USER CODE END 1 */
+/* USER CODE END 1 */
 
-	/* MCU Configuration--------------------------------------------------------*/
+/* MCU Configuration--------------------------------------------------------*/
 
-	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-	HAL_Init();
+/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+HAL_Init();
 
-	/* USER CODE BEGIN Init */
+/* USER CODE BEGIN Init */
 
-	/* USER CODE END Init */
+/* USER CODE END Init */
 
-	/* Configure the system clock */
-	SystemClock_Config();
+/* Configure the system clock */
+SystemClock_Config();
 
-	/* USER CODE BEGIN SysInit */
+/* USER CODE BEGIN SysInit */
 
-	/* USER CODE END SysInit */
+/* USER CODE END SysInit */
 
-	/* Initialize all configured peripherals */
-	MX_GPIO_Init();
-	MX_TIM2_Init();
-	MX_USART1_UART_Init();
-	MX_DMA_Init();
-	MX_TIM3_Init();
-	/* USER CODE BEGIN 2 */
+/* Initialize all configured peripherals */
+MX_GPIO_Init();
+MX_TIM2_Init();
+MX_USART1_UART_Init();
+MX_DMA_Init();
+MX_TIM3_Init();
+/* USER CODE BEGIN 2 */
 
-	initShip();
+initShip();
 
-	/* USER CODE END 2 */
+/* USER CODE END 2 */
 
-	/* Infinite loop */
-	/* USER CODE BEGIN WHILE */
-	while (1) {
-		/* USER CODE END WHILE */
+/* Infinite loop */
+/* USER CODE BEGIN WHILE */
+while (1) {
+	/* USER CODE END WHILE */
 
-		/* USER CODE BEGIN 3 */
-		if (flagEvent.contact == 0) {
-			uint8_t ok = 0xc8;
-			uint8_t sizeBuff = pushArrTX(adress_hc_12, &ok, 1, 1);
-			HAL_UART_Transmit(&huart1, transmitBuff, sizeBuff, 100);
-			HAL_Delay(500);
-			cleanTxArr();
-		}
-		if (flagEvent.rxReady == 1) {
-			flagEvent.rxReady = 0;
-			parseArrRX(reciveBuff, flagEvent.rxSize);
-			HAL_UARTEx_ReceiveToIdle_DMA(&huart1, reciveBuff,
-					sizeof(reciveBuff));
+	/* USER CODE BEGIN 3 */
+	if (flagEvent.contact == 0) {
+		uint8_t ok = 0xc8;
+
+		uint8_t sizeBuff = pushArrTX(adress_hc_12, &ok, 1, 1);
+		HAL_UART_Transmit(&huart1, transmitBuff, sizeBuff, 100);
+		HAL_UARTEx_ReceiveToIdle(&huart1, reciveBuff, (uint16_t) 50,
+				(uint8_t*) &flagEvent.rxSize, 500);
+		//HAL_Delay(500);
+		if (flagEvent.rxSize != 0) {
+			flagEvent.rxReady = 1;
 		}
 
-		if (flagEvent.IsCommand == 1) {
-			command_work();
-		}
-
-		/* USER CODE END 3 */
+		cleanTxArr();
 	}
+	if (flagEvent.rxReady == 1) {
+		flagEvent.rxReady = 0;
+		parseArrRX(reciveBuff, flagEvent.rxSize);
+		cleanRxArr();
+		//HAL_UARTEx_ReceiveToIdle_DMA(&huart1, reciveBuff,					sizeof(reciveBuff));
+	}
+
+	if (flagEvent.contact == 1) {
+		uint8_t a = flagEvent.contact;
+		HAL_UARTEx_ReceiveToIdle(&huart1, reciveBuff, (uint16_t) 50,
+				(uint8_t*) &flagEvent.rxSize, 100);
+		flagEvent.contact = a;
+		flagEvent.rxReady = 1;
+		//command_work();
+	}
+	/* USER CODE END 3 */
+}
 }
 
 /**
@@ -364,39 +394,40 @@ int main(void) {
  * @retval None
  */
 void SystemClock_Config(void) {
-	RCC_OscInitTypeDef RCC_OscInitStruct = { 0 };
-	RCC_ClkInitTypeDef RCC_ClkInitStruct = { 0 };
+RCC_OscInitTypeDef RCC_OscInitStruct = { 0 };
+RCC_ClkInitTypeDef RCC_ClkInitStruct = { 0 };
 
-	/** Initializes the RCC Oscillators according to the specified parameters
-	 * in the RCC_OscInitTypeDef structure.
-	 */
-	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-	RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-	RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
-	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
-		Error_Handler();
-	}
-	/** Initializes the CPU, AHB and APB buses clocks
-	 */
-	RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
-			| RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
-	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-	RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-	RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-	RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+/** Initializes the RCC Oscillators according to the specified parameters
+ * in the RCC_OscInitTypeDef structure.
+ */
+RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+RCC_OscInitStruct.HSICalibrationValue =
+RCC_HSICALIBRATION_DEFAULT;
+RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+	Error_Handler();
+}
+/** Initializes the CPU, AHB and APB buses clocks
+ */
+RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
+		| RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK) {
-		Error_Handler();
-	}
+if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK) {
+	Error_Handler();
+}
 }
 
 /* USER CODE BEGIN 4 */
 
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
-	//HAL_UART_Transmit(&huart1, reciveBuff, Size, 100);
-	flagEvent.rxReady = 1;
-	flagEvent.rxSize = Size;
+//HAL_UART_Transmit(&huart1, reciveBuff, Size, 100);
+flagEvent.rxReady = 1;
+flagEvent.rxSize = Size;
 }
 
 /* USER CODE END 4 */
@@ -406,12 +437,12 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
  * @retval None
  */
 void Error_Handler(void) {
-	/* USER CODE BEGIN Error_Handler_Debug */
-	/* User can add his own implementation to report the HAL error return state */
-	__disable_irq();
-	while (1) {
-	}
-	/* USER CODE END Error_Handler_Debug */
+/* USER CODE BEGIN Error_Handler_Debug */
+/* User can add his own implementation to report the HAL error return state */
+__disable_irq();
+while (1) {
+}
+/* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT
